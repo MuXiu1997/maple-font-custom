@@ -1,0 +1,80 @@
+name: Custom Build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  MAPLE_FONT_VERSION: v7.9
+
+jobs:
+  custom-build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Checkout Upstream
+        uses: actions/checkout@v4
+        with:
+          repository: subframe7536/maple-font
+          ref: ${{ env.MAPLE_FONT_VERSION }}
+          path: upstream
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: 'upstream/requirements.txt'
+
+      - name: Install Python Dependencies
+        working-directory: upstream
+        run: |
+          pip install -r requirements.txt
+
+      - name: Install FontForge
+        run: |
+          sudo apt update -y -q
+          sudo apt install software-properties-common -y -q
+          sudo apt install python3-fontforge -y -q
+          sudo apt install fuse -y -q
+
+          curl -L "https://github.com/fontforge/fontforge/releases/download/20230101/FontForge-2023-01-01-a1dad3e-x86_64.AppImage" --output fontforge
+          chmod u+x fontforge
+          export PATH=`pwd`:$PATH
+          echo "PATH=$PATH" >> $GITHUB_ENV
+
+      - name: Modify config.json
+        run: |
+          cp upstream/config.json config.base.json
+          jq -f custom.patch.jq config.base.json | tee upstream/config.json
+
+      - name: Run Build
+        working-directory: upstream
+        run: |
+          python build.py --archive
+        continue-on-error: true
+
+      - name: Create Release
+        run: |
+          notes_file=${PWD}/NOTES
+
+          pushd upstream
+          if [ ! -d "fonts/archive" ]; then
+            echo "Error: Failed to build font, please check [Run Build] step."
+            exit 1
+          fi
+
+          echo "### Final Configuration" >> $notes_file
+          echo "\`\`\`" >> $notes_file
+          python build.py $BUILD_ARGS --dry | sed '1s/^/font_config: /' >> $notes_file
+          echo "\`\`\`" >> $notes_file
+          popd
+
+          gh release create "v$(date +%s)" upstream/fonts/archive/*.* --notes-file $notes_file
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
